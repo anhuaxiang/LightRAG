@@ -130,6 +130,7 @@ async def _handle_entity_relation_summary(
 async def _handle_single_entity_extraction(
     record_attributes: list[str],
     chunk_key: str,
+    metadata: Union[dict[str, Any], None] = None,
 ):
     if len(record_attributes) < 4 or record_attributes[0] != '"entity"':
         return None
@@ -145,12 +146,14 @@ async def _handle_single_entity_extraction(
         entity_type=entity_type,
         description=entity_description,
         source_id=entity_source_id,
+        metadata=metadata,
     )
 
 
 async def _handle_single_relationship_extraction(
     record_attributes: list[str],
     chunk_key: str,
+    metadata: Union[dict[str, Any], None] = None,
 ):
     if len(record_attributes) < 5 or record_attributes[0] != '"relationship"':
         return None
@@ -164,6 +167,9 @@ async def _handle_single_relationship_extraction(
     weight = (
         float(record_attributes[-1]) if is_float_regex(record_attributes[-1]) else 1.0
     )
+    _meta = {"created_at": time.time()}
+    if metadata:
+        _meta.update(metadata)
     return dict(
         src_id=source,
         tgt_id=target,
@@ -171,8 +177,33 @@ async def _handle_single_relationship_extraction(
         description=edge_description,
         keywords=edge_keywords,
         source_id=edge_source_id,
-        metadata={"created_at": time.time()},
+        metadata=_meta,
     )
+
+
+def merge_metadata(already_metadata, data):
+    if already_metadata is None and all(item.get('metadata') is None for item in data):
+        return None
+    merged_metadata = defaultdict(list)
+    if already_metadata:
+        for key, value in already_metadata.items():
+            if isinstance(value, list):
+                merged_metadata[key].extend(value)
+            else:
+                merged_metadata[key].append(value)
+    for item in data:
+        metadata = item.get('metadata')
+        if metadata:
+            for key, value in metadata.items():
+                if isinstance(value, list):
+                    merged_metadata[key].extend(value)
+                else:
+                    merged_metadata[key].append(value)
+
+    for key in merged_metadata:
+        merged_metadata[key] = list(set(merged_metadata[key]))
+    return dict(merged_metadata)
+
 
 
 async def _merge_nodes_then_upsert(
@@ -185,6 +216,7 @@ async def _merge_nodes_then_upsert(
     already_entity_types = []
     already_source_ids = []
     already_description = []
+    already_medata = None
 
     already_node = await knowledge_graph_inst.get_node(entity_name)
     if already_node is not None:
@@ -193,6 +225,9 @@ async def _merge_nodes_then_upsert(
             split_string_by_multi_markers(already_node["source_id"], [GRAPH_FIELD_SEP])
         )
         already_description.append(already_node["description"])
+        already_medata = already_node.get("metadata")
+        if isinstance(already_medata, str):
+            already_medata = json.loads(already_medata)
 
     entity_type = sorted(
         Counter(
@@ -207,19 +242,28 @@ async def _merge_nodes_then_upsert(
     source_id = GRAPH_FIELD_SEP.join(
         set([dp["source_id"] for dp in nodes_data] + already_source_ids)
     )
+    metadata = merge_metadata(already_medata, nodes_data)
+
     description = await _handle_entity_relation_summary(
         entity_name, description, global_config
+    )
+
+    await knowledge_graph_inst.upsert_node(
+        entity_name,
+        node_data=dict(
+            entity_type=entity_type,
+            description=description,
+            source_id=source_id,
+            metadata=json.dumps(metadata),
+        ),
     )
     node_data = dict(
         entity_type=entity_type,
         description=description,
         source_id=source_id,
+        entity_name=entity_name,
+        metadata=metadata,
     )
-    await knowledge_graph_inst.upsert_node(
-        entity_name,
-        node_data=node_data,
-    )
-    node_data["entity_name"] = entity_name
     return node_data
 
 
@@ -234,6 +278,7 @@ async def _merge_edges_then_upsert(
     already_source_ids = []
     already_description = []
     already_keywords = []
+    already_medata = None
 
     if await knowledge_graph_inst.has_edge(src_id, tgt_id):
         already_edge = await knowledge_graph_inst.get_edge(src_id, tgt_id)
@@ -245,6 +290,9 @@ async def _merge_edges_then_upsert(
         already_keywords.extend(
             split_string_by_multi_markers(already_edge["keywords"], [GRAPH_FIELD_SEP])
         )
+        already_medata = already_edge.get("metadata")
+        if isinstance(already_medata, str):
+            already_medata = json.loads(already_medata)
 
     weight = sum([dp["weight"] for dp in edges_data] + already_weights)
     description = GRAPH_FIELD_SEP.join(
@@ -256,6 +304,7 @@ async def _merge_edges_then_upsert(
     source_id = GRAPH_FIELD_SEP.join(
         set([dp["source_id"] for dp in edges_data] + already_source_ids)
     )
+    metadata = merge_metadata(already_medata, edges_data)
     for need_insert_id in [src_id, tgt_id]:
         if not (await knowledge_graph_inst.has_node(need_insert_id)):
             await knowledge_graph_inst.upsert_node(
@@ -264,6 +313,7 @@ async def _merge_edges_then_upsert(
                     "source_id": source_id,
                     "description": description,
                     "entity_type": '"UNKNOWN"',
+                    "metadata": metadata,
                 },
             )
     description = await _handle_entity_relation_summary(
@@ -277,6 +327,7 @@ async def _merge_edges_then_upsert(
             description=description,
             keywords=keywords,
             source_id=source_id,
+            metadata=json.dumps(metadata),
         ),
     )
 
@@ -285,6 +336,7 @@ async def _merge_edges_then_upsert(
         tgt_id=tgt_id,
         description=description,
         keywords=keywords,
+        metadata=metadata,
     )
 
     return edge_data
@@ -443,14 +495,14 @@ async def extract_entities(
                 record, [context_base["tuple_delimiter"]]
             )
             if_entities = await _handle_single_entity_extraction(
-                record_attributes, chunk_key
+                record_attributes, chunk_key, chunk_dp["metadata"]
             )
             if if_entities is not None:
                 maybe_nodes[if_entities["entity_name"]].append(if_entities)
                 continue
 
             if_relation = await _handle_single_relationship_extraction(
-                record_attributes, chunk_key
+                record_attributes, chunk_key, chunk_dp["metadata"]
             )
             if if_relation is not None:
                 maybe_edges[(if_relation["src_id"], if_relation["tgt_id"])].append(
@@ -536,7 +588,7 @@ async def extract_entities(
         data_for_vdb = {
             compute_mdhash_id(dp["entity_name"], prefix="ent-"): {
                 "content": dp["entity_name"] + dp["description"],
-                "entity_name": dp["entity_name"],
+                "entity_name": dp["entity_name"], "metadata": dp.get("metadata")
             }
             for dp in all_entities_data
         }
@@ -552,7 +604,8 @@ async def extract_entities(
                 + dp["tgt_id"]
                 + dp["description"],
                 "metadata": {
-                    "created_at": dp.get("metadata", {}).get("created_at", time.time())
+                    **dp.get("metadata", {}),
+                    "created_at": dp.get("metadata", {}).get("created_at", time.time()),
                 },
             }
             for dp in all_relationships_data
@@ -856,7 +909,7 @@ async def mix_kg_vector_query(
         try:
             # Reduce top_k for vector search in hybrid mode since we have structured information from KG
             mix_topk = min(10, query_param.top_k)
-            results = await chunks_vdb.query(augmented_query, top_k=mix_topk)
+            results = await chunks_vdb.query(augmented_query, top_k=mix_topk, filter_exp=query_param.filter_exp)
             if not results:
                 return None
 
@@ -1055,7 +1108,7 @@ async def _get_node_data(
     query_param: QueryParam,
 ):
     # get similar entities
-    results = await entities_vdb.query(query, top_k=query_param.top_k)
+    results = await entities_vdb.query(query, top_k=query_param.top_k, filter_exp=query_param.filter_exp)
     if not len(results):
         return "", "", ""
     # get entity information
@@ -1270,7 +1323,7 @@ async def _get_edge_data(
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
 ):
-    results = await relationships_vdb.query(keywords, top_k=query_param.top_k)
+    results = await relationships_vdb.query(keywords, top_k=query_param.top_k, filter_exp=query_param.filter_exp)
 
     if not len(results):
         return "", "", ""
@@ -1509,7 +1562,7 @@ async def naive_query(
     if cached_response is not None:
         return cached_response
 
-    results = await chunks_vdb.query(query, top_k=query_param.top_k)
+    results = await chunks_vdb.query(query, top_k=query_param.top_k, filter_exp=query_param.filter_exp)
     if not len(results):
         return PROMPTS["fail_response"]
 

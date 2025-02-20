@@ -52,6 +52,7 @@ class MilvusVectorDBStorge(BaseVectorStorage):
             {
                 "id": k,
                 **{k1: v1 for k1, v1 in v.items() if k1 in self.meta_fields},
+                **({mk: mv if isinstance(mv, list) else [mv] for mk, mv in (v.get('metadata') or {}).items()})
             }
             for k, v in data.items()
         ]
@@ -78,7 +79,7 @@ class MilvusVectorDBStorge(BaseVectorStorage):
         results = self._client.upsert(collection_name=self.namespace, data=list_data)
         return results
 
-    async def query(self, query, top_k=5):
+    async def query(self, query, top_k=5, filter_exp=None):
         embedding = await self.embedding_func([query])
         results = self._client.search(
             collection_name=self.namespace,
@@ -86,6 +87,7 @@ class MilvusVectorDBStorge(BaseVectorStorage):
             limit=top_k,
             output_fields=list(self.meta_fields),
             search_params={"metric_type": "COSINE", "params": {"radius": 0.2}},
+            filter=filter_exp or '',
         )
         print(results)
         return [

@@ -138,7 +138,7 @@ class ChromaVectorDBStorage(BaseVectorStorage):
             logger.error(f"Error during ChromaDB upsert: {str(e)}")
             raise
 
-    async def query(self, query: str, top_k=5) -> Union[dict, list[dict]]:
+    async def query(self, query: str, top_k=5, **kwargs) -> Union[dict, list[dict]]:
         try:
             embedding = await self.embedding_func([query])
 

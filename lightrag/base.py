@@ -20,6 +20,7 @@ class TextChunkSchema(TypedDict):
     content: str
     full_doc_id: str
     chunk_order_index: int
+    metadata: Union[dict[str, Any], None]
 
 
 T = TypeVar("T")
@@ -51,6 +52,7 @@ class QueryParam:
     history_turns: int = (
         3  # Number of complete conversation turns (user-assistant pairs) to consider
     )
+    filter_exp: str = None  # Filter expression for the query
 
 
 @dataclass
@@ -72,7 +74,7 @@ class BaseVectorStorage(StorageNameSpace):
     embedding_func: EmbeddingFunc
     meta_fields: set = field(default_factory=set)
 
-    async def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
+    async def query(self, query: str, top_k: int, **kwargs) -> list[dict[str, Any]]:
         raise NotImplementedError
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:

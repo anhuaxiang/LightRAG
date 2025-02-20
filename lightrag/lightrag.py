@@ -362,6 +362,7 @@ class LightRAG:
         string_or_strings: Union[str, list[str]],
         split_by_character: str | None = None,
         split_by_character_only: bool = False,
+        metadata: Union[dict, list[dict]] = None,
     ):
         """Sync Insert documents with checkpoint support
 
@@ -371,10 +372,11 @@ class LightRAG:
             chunk_size, split the sub chunk by token size.
             split_by_character_only: if split_by_character_only is True, split the string by character only, when
             split_by_character is None, this parameter is ignored.
+            metadata: metadata to be included with the document.
         """
         loop = always_get_an_event_loop()
         return loop.run_until_complete(
-            self.ainsert(string_or_strings, split_by_character, split_by_character_only)
+            self.ainsert(string_or_strings, split_by_character, split_by_character_only, metadata)
         )
 
     async def ainsert(
@@ -382,6 +384,7 @@ class LightRAG:
         string_or_strings: Union[str, list[str]],
         split_by_character: str | None = None,
         split_by_character_only: bool = False,
+        metadata: Union[dict, list[dict]] = None,
     ):
         """Async Insert documents with checkpoint support
 
@@ -391,8 +394,13 @@ class LightRAG:
             chunk_size, split the sub chunk by token size.
             split_by_character_only: if split_by_character_only is True, split the string by character only, when
             split_by_character is None, this parameter is ignored.
+            metadata: metadata to be included with the document.
         """
-        await self.apipeline_enqueue_documents(string_or_strings)
+        if metadata and self.vector_storage != 'MilvusVectorDBStorge':
+            raise ValueError("Metadata is only supported with MilvusVectorDBStorge.")
+        if isinstance(string_or_strings, list) and metadata and isinstance(metadata, list):
+            assert len(string_or_strings) == len(metadata), "Length of documents and scalars should be the same."
+        await self.apipeline_enqueue_documents(string_or_strings, metadata)
         await self.apipeline_process_enqueue_documents(
             split_by_character, split_by_character_only
         )
@@ -449,7 +457,7 @@ class LightRAG:
             if update_storage:
                 await self._insert_done()
 
-    async def apipeline_enqueue_documents(self, string_or_strings: str | list[str]):
+    async def apipeline_enqueue_documents(self, string_or_strings: str | list[str], metadata: dict | list[dict] = None):
         """
         Pipeline for Processing Documents
 
@@ -461,8 +469,21 @@ class LightRAG:
         if isinstance(string_or_strings, str):
             string_or_strings = [string_or_strings]
 
-        # 1. Remove duplicate contents from the list
-        unique_contents = list(set(doc.strip() for doc in string_or_strings))
+        if metadata and isinstance(metadata, dict):
+            metadata = [metadata]
+        elif not metadata:
+            metadata = [None] * len(string_or_strings)
+
+        unique_contents = []
+        unique_metadata = []
+
+        seen = set()
+        for idx, content in enumerate(string_or_strings):
+            content = content.strip()
+            if content not in seen:
+                seen.add(content.strip())
+                unique_contents.append(content)
+                unique_metadata.append(metadata[idx])
 
         # 2. Generate document IDs and initial status
         new_docs: dict[str, Any] = {
@@ -473,8 +494,9 @@ class LightRAG:
                 "status": DocStatus.PENDING,
                 "created_at": datetime.now().isoformat(),
                 "updated_at": datetime.now().isoformat(),
+                "metadata": metadata
             }
-            for content in unique_contents
+            for content, metadata in zip(unique_contents, unique_metadata)
         }
 
         # 3. Filter out already processed documents
@@ -545,6 +567,7 @@ class LightRAG:
                             "content_summary": status_doc.content_summary,
                             "content_length": status_doc.content_length,
                             "created_at": status_doc.created_at,
+                            "metadata": status_doc.metadata
                         }
                     }
                 )
@@ -553,6 +576,7 @@ class LightRAG:
                     compute_mdhash_id(dp["content"], prefix="chunk-"): {
                         **dp,
                         "full_doc_id": doc_id,
+                        "metadata": status_doc.metadata
                     }
                     for dp in self.chunking_func(
                         status_doc.content,
@@ -568,7 +592,7 @@ class LightRAG:
                 tasks = [
                     self.chunks_vdb.upsert(chunks),
                     self._process_entity_relation_graph(chunks),
-                    self.full_docs.upsert({doc_id: {"content": status_doc.content}}),
+                    self.full_docs.upsert({doc_id: {"content": status_doc.content, "metadata": status_doc.metadata}}),
                     self.text_chunks.upsert(chunks),
                 ]
                 try:
@@ -777,6 +801,9 @@ class LightRAG:
     async def aquery(
         self, query: str, prompt: str = "", param: QueryParam = QueryParam()
     ):
+        if param.filter_exp and self.vector_storage != 'MilvusVectorDBStorge':
+            raise ValueError("Filter expression is only supported with MilvusVectorDBStorge.")
+
         if param.mode in ["local", "global", "hybrid"]:
             response = await kg_query(
                 query,
