@@ -313,7 +313,7 @@ async def _merge_edges_then_upsert(
                     "source_id": source_id,
                     "description": description,
                     "entity_type": '"UNKNOWN"',
-                    "metadata": metadata,
+                    "metadata": json.dumps(metadata),
                 },
             )
     description = await _handle_entity_relation_summary(
