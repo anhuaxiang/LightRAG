@@ -52,7 +52,7 @@ class QueryParam:
     history_turns: int = (
         3  # Number of complete conversation turns (user-assistant pairs) to consider
     )
-    filter_exp: str = None  # Filter expression for the query
+    filter_exp: str | dict = None  # Filter expression for the query
 
 
 @dataclass

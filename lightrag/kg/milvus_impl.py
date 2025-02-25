@@ -81,13 +81,28 @@ class MilvusVectorDBStorge(BaseVectorStorage):
 
     async def query(self, query, top_k=5, filter_exp=None):
         embedding = await self.embedding_func([query])
+
+        final_exp = ''
+        if isinstance(filter_exp, dict):
+            for k, value in filter_exp.items():
+                cu_exp = ''
+                for v in value:
+                    if cu_exp:
+                        cu_exp += ' or '
+                    cu_exp += f'json_contains({k}, "{v}")'
+
+                if final_exp and cu_exp:
+                    final_exp += f' and ({cu_exp})'
+                elif cu_exp:
+                    final_exp += f'({cu_exp})'
+
         results = self._client.search(
             collection_name=self.namespace,
             data=embedding,
             limit=top_k,
             output_fields=list(self.meta_fields),
             search_params={"metric_type": "COSINE", "params": {"radius": 0.2}},
-            filter=filter_exp or '',
+            filter=final_exp or '',
         )
         print(results)
         return [

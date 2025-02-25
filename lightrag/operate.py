@@ -1083,7 +1083,9 @@ async def _build_query_context(
     # not necessary to use LLM to generate a response
     if not entities_context.strip() and not relations_context.strip():
         return None
-
+    if query_param.filter_exp and isinstance(query_param.filter_exp, dict):
+        entities_context = ''
+        relations_context = ''
     return f"""
 -----Entities-----
 ```csv
@@ -1189,6 +1191,12 @@ async def _get_node_data(
 
     text_units_section_list = [["id", "content"]]
     for i, t in enumerate(use_text_units):
+        metadata = t.get('metadata')
+        if not (
+                query_param.filter_exp and isinstance(query_param.filter_exp, dict) and metadata and
+                all(metadata.get(k) in value for k, value in query_param.filter_exp.items())
+        ):
+            continue
         text_units_section_list.append([i, t["content"]])
     text_units_context = list_of_list_to_csv(text_units_section_list)
     return entities_context, relations_context, text_units_context
@@ -1421,6 +1429,12 @@ async def _get_edge_data(
 
     text_units_section_list = [["id", "content"]]
     for i, t in enumerate(use_text_units):
+        metadata = t.get('metadata')
+        if not (
+                query_param.filter_exp and isinstance(query_param.filter_exp, dict) and metadata and
+                all(metadata.get(k) in value for k, value in query_param.filter_exp.items())
+        ):
+            continue
         text_units_section_list.append([i, t["content"]])
     text_units_context = list_of_list_to_csv(text_units_section_list)
     return entities_context, relations_context, text_units_context
