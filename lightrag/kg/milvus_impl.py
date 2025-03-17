@@ -104,7 +104,6 @@ class MilvusVectorDBStorge(BaseVectorStorage):
             search_params={"metric_type": "COSINE", "params": {"radius": 0.2}},
             filter=final_exp or '',
         )
-        print(results)
         return [
             {**dp["entity"], "id": dp["id"], "distance": dp["distance"]}
             for dp in results[0]
