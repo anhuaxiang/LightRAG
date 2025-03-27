@@ -625,7 +625,7 @@ async def kg_query(
     global_config: dict,
     hashing_kv: BaseKVStorage = None,
     prompt: str = "",
-) -> str:
+) -> (str, str):
     # Handle cache
     use_model_func = global_config["llm_model_func"]
     args_hash = compute_args_hash(query_param.mode, query, query_param.filter_exp, cache_type="query")
@@ -633,7 +633,7 @@ async def kg_query(
         hashing_kv, args_hash, query, query_param.mode, cache_type="query"
     )
     if cached_response is not None:
-        return cached_response
+        return cached_response, None
 
     # Extract keywords using extract_keywords_only function which already supports conversation history
     hl_keywords, ll_keywords = await extract_keywords_only(
@@ -646,7 +646,7 @@ async def kg_query(
     # Handle empty keywords
     if hl_keywords == [] and ll_keywords == []:
         logger.warning("low_level_keywords and high_level_keywords is empty")
-        return PROMPTS["fail_response"]
+        return PROMPTS["fail_response"], None
     if ll_keywords == [] and query_param.mode in ["local", "hybrid"]:
         logger.warning(
             "low_level_keywords is empty, switching from %s mode to global mode",
@@ -667,7 +667,7 @@ async def kg_query(
 
     # Build context
     keywords = [ll_keywords, hl_keywords]
-    context = await _build_query_context(
+    context, chunks = await _build_query_context(
         keywords,
         knowledge_graph_inst,
         entities_vdb,
@@ -677,9 +677,9 @@ async def kg_query(
     )
 
     if query_param.only_need_context:
-        return context
+        return context, None
     if context is None:
-        return PROMPTS["fail_response"]
+        return PROMPTS["fail_response"], None
 
     # Process conversation history
     history_context = ""
@@ -696,7 +696,7 @@ async def kg_query(
     )
 
     if query_param.only_need_prompt:
-        return sys_prompt
+        return sys_prompt, None
 
     response = await use_model_func(
         query,
@@ -728,7 +728,7 @@ async def kg_query(
             cache_type="query",
         ),
     )
-    return response
+    return response, chunks
 
 
 async def extract_keywords_only(
@@ -833,7 +833,7 @@ async def mix_kg_vector_query(
     query_param: QueryParam,
     global_config: dict,
     hashing_kv: BaseKVStorage = None,
-) -> str:
+) -> (str, str | list):
     """
     Hybrid retrieval implementation combining knowledge graph and vector search.
 
@@ -849,7 +849,7 @@ async def mix_kg_vector_query(
         hashing_kv, args_hash, query, "mix", cache_type="query"
     )
     if cached_response is not None:
-        return cached_response
+        return cached_response, None
 
     # Process conversation history
     history_context = ""
@@ -868,7 +868,7 @@ async def mix_kg_vector_query(
 
             if not hl_keywords and not ll_keywords:
                 logger.warning("Both high-level and low-level keywords are empty")
-                return None
+                return None, None
 
             # Convert keyword lists to strings
             ll_keywords_str = ", ".join(ll_keywords) if ll_keywords else ""
@@ -876,7 +876,7 @@ async def mix_kg_vector_query(
 
             # Set query mode based on available keywords
             if not ll_keywords_str and not hl_keywords_str:
-                return None
+                return None, None
             elif not ll_keywords_str:
                 query_param.mode = "global"
             elif not hl_keywords_str:
@@ -885,7 +885,7 @@ async def mix_kg_vector_query(
                 query_param.mode = "hybrid"
 
             # Build knowledge graph context
-            context = await _build_query_context(
+            context, chunks = await _build_query_context(
                 [ll_keywords_str, hl_keywords_str],
                 knowledge_graph_inst,
                 entities_vdb,
@@ -894,11 +894,11 @@ async def mix_kg_vector_query(
                 query_param,
             )
 
-            return context
+            return context, chunks
 
         except Exception as e:
             logger.error(f"Error in get_kg_context: {str(e)}")
-            return None
+            return None, None
 
     async def get_vector_context():
         # Consider conversation history in vector search
@@ -911,7 +911,7 @@ async def mix_kg_vector_query(
             mix_topk = min(10, query_param.top_k)
             results = await chunks_vdb.query(augmented_query, top_k=mix_topk, filter_exp=query_param.filter_exp)
             if not results:
-                return None
+                return None, None
 
             chunks_ids = [r["id"] for r in results]
             chunks = await text_chunks_db.get_by_ids(chunks_ids)
@@ -927,7 +927,7 @@ async def mix_kg_vector_query(
                     valid_chunks.append(chunk_with_time)
 
             if not valid_chunks:
-                return None
+                return None, None
 
             maybe_trun_chunks = truncate_list_by_token_size(
                 valid_chunks,
@@ -936,7 +936,7 @@ async def mix_kg_vector_query(
             )
 
             if not maybe_trun_chunks:
-                return None
+                return None, None
 
             # Include time information in content
             formatted_chunks = []
@@ -947,22 +947,22 @@ async def mix_kg_vector_query(
                 formatted_chunks.append(chunk_text)
 
             logger.info(f"Truncate {len(chunks)} to {len(formatted_chunks)} chunks")
-            return "\n--New Chunk--\n".join(formatted_chunks)
+            return "\n--New Chunk--\n".join(formatted_chunks), maybe_trun_chunks
         except Exception as e:
             logger.error(f"Error in get_vector_context: {e}")
-            return None
+            return None, None
 
     # 3. Execute both retrievals in parallel
-    kg_context, vector_context = await asyncio.gather(
+    (kg_context, kg_chunks), (vector_context, vec_chunks) = await asyncio.gather(
         get_kg_context(), get_vector_context()
     )
 
     # 4. Merge contexts
     if kg_context is None and vector_context is None:
-        return PROMPTS["fail_response"]
+        return PROMPTS["fail_response"], None
 
     if query_param.only_need_context:
-        return {"kg_context": kg_context, "vector_context": vector_context}
+        return {"kg_context": kg_context, "vector_context": vector_context}, None
 
     # 5. Construct hybrid prompt
     sys_prompt = PROMPTS["mix_rag_response"].format(
@@ -977,7 +977,7 @@ async def mix_kg_vector_query(
     )
 
     if query_param.only_need_prompt:
-        return sys_prompt
+        return sys_prompt, None
 
     # 6. Generate response
     response = await use_model_func(
@@ -1013,7 +1013,7 @@ async def mix_kg_vector_query(
             ),
         )
 
-    return response
+    return response, (kg_chunks, vec_chunks)
 
 
 async def _build_query_context(
@@ -1082,7 +1082,7 @@ async def _build_query_context(
         )
     # not necessary to use LLM to generate a response
     if not entities_context.strip() and not relations_context.strip():
-        return None
+        return None, None
     if query_param.filter_exp and isinstance(query_param.filter_exp, dict):
         entities_context = ''
         relations_context = ''
@@ -1099,7 +1099,7 @@ async def _build_query_context(
 ```csv
 {text_units_context}
 ```
-"""
+""", text_units_context
 
 
 async def _get_node_data(
@@ -1191,13 +1191,16 @@ async def _get_node_data(
 
     text_units_section_list = [["id", "content"]]
     for i, t in enumerate(use_text_units):
-        metadata = t.get('metadata')
-        if not (
-                query_param.filter_exp and isinstance(query_param.filter_exp, dict) and metadata and
-                all(metadata.get(k) in value for k, value in query_param.filter_exp.items())
-        ):
-            continue
-        text_units_section_list.append([i, t["content"]])
+        if not query_param.filter_exp:
+            text_units_section_list.append([i, t["content"]])
+        else:
+            metadata = t.get('metadata')
+            if not (
+                    query_param.filter_exp and isinstance(query_param.filter_exp, dict) and metadata and
+                    all(metadata.get(k) in value for k, value in query_param.filter_exp.items())
+            ):
+                continue
+            text_units_section_list.append([i, t["content"]])
     text_units_context = list_of_list_to_csv(text_units_section_list)
     return entities_context, relations_context, text_units_context
 
@@ -1429,13 +1432,16 @@ async def _get_edge_data(
 
     text_units_section_list = [["id", "content"]]
     for i, t in enumerate(use_text_units):
-        metadata = t.get('metadata')
-        if not (
-                query_param.filter_exp and isinstance(query_param.filter_exp, dict) and metadata and
-                all(metadata.get(k) in value for k, value in query_param.filter_exp.items())
-        ):
-            continue
-        text_units_section_list.append([i, t["content"]])
+        if not query_param.filter_exp:
+            text_units_section_list.append([i, t["content"]])
+        else:
+            metadata = t.get('metadata')
+            if not (
+                    query_param.filter_exp and isinstance(query_param.filter_exp, dict) and metadata and
+                    all(metadata.get(k) in value for k, value in query_param.filter_exp.items())
+            ):
+                continue
+            text_units_section_list.append([i, t["content"]])
     text_units_context = list_of_list_to_csv(text_units_section_list)
     return entities_context, relations_context, text_units_context
 
@@ -1574,11 +1580,11 @@ async def naive_query(
         hashing_kv, args_hash, query, "default", cache_type="query"
     )
     if cached_response is not None:
-        return cached_response
+        return cached_response, None
 
     results = await chunks_vdb.query(query, top_k=query_param.top_k, filter_exp=query_param.filter_exp)
     if not len(results):
-        return PROMPTS["fail_response"]
+        return PROMPTS["fail_response"], None
 
     chunks_ids = [r["id"] for r in results]
     chunks = await text_chunks_db.get_by_ids(chunks_ids)
@@ -1590,7 +1596,7 @@ async def naive_query(
 
     if not valid_chunks:
         logger.warning("No valid chunks found after filtering")
-        return PROMPTS["fail_response"]
+        return PROMPTS["fail_response"], None
 
     maybe_trun_chunks = truncate_list_by_token_size(
         valid_chunks,
@@ -1600,13 +1606,13 @@ async def naive_query(
 
     if not maybe_trun_chunks:
         logger.warning("No chunks left after truncation")
-        return PROMPTS["fail_response"]
+        return PROMPTS["fail_response"], None
 
     logger.info(f"Truncate {len(chunks)} to {len(maybe_trun_chunks)} chunks")
     section = "\n--New Chunk--\n".join([c["content"] for c in maybe_trun_chunks])
 
     if query_param.only_need_context:
-        return section
+        return section, None
 
     # Process conversation history
     history_context = ""
@@ -1623,7 +1629,7 @@ async def naive_query(
     )
 
     if query_param.only_need_prompt:
-        return sys_prompt
+        return sys_prompt, None
 
     response = await use_model_func(
         query,
@@ -1658,7 +1664,7 @@ async def naive_query(
         ),
     )
 
-    return response
+    return response, maybe_trun_chunks
 
 
 async def kg_query_with_keywords(

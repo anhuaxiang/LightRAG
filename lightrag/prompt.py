@@ -340,6 +340,6 @@ When handling information with timestamps:
 - Ensure the response maintains continuity with the conversation history.
 - Organize answer in sesctions focusing on one main point or aspect of the answer
 - Use clear and descriptive section titles that reflect the content
-- List up to 5 most important reference sources at the end under "References" sesction. Clearly indicating whether each source is from Knowledge Graph (KG) or Vector Data (DC), in the following format: [KG/DC] Source content
+- List up to 5 most important reference sources at the end under "References" sesction. Clearly indicating whether each source is from Knowledge Graph (KG) or Vector Data (DC), in the following format:  `- [KG/DC] Source content`
 - If you don't know the answer, just say so. Do not make anything up.
 - Do not include information not provided by the Data Sources."""

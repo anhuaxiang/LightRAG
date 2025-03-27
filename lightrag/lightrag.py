@@ -805,7 +805,7 @@ class LightRAG:
             raise ValueError("Filter expression is only supported with MilvusVectorDBStorge.")
 
         if param.mode in ["local", "global", "hybrid"]:
-            response = await kg_query(
+            response, chunks = await kg_query(
                 query,
                 self.chunk_entity_relation_graph,
                 self.entities_vdb,
@@ -826,7 +826,7 @@ class LightRAG:
                 prompt=prompt,
             )
         elif param.mode == "naive":
-            response = await naive_query(
+            response, chunks = await naive_query(
                 query,
                 self.chunks_vdb,
                 self.text_chunks,
@@ -844,7 +844,7 @@ class LightRAG:
                 ),
             )
         elif param.mode == "mix":
-            response = await mix_kg_vector_query(
+            response, chunks = await mix_kg_vector_query(
                 query,
                 self.chunk_entity_relation_graph,
                 self.entities_vdb,
@@ -867,7 +867,7 @@ class LightRAG:
         else:
             raise ValueError(f"Unknown mode {param.mode}")
         await self._query_done()
-        return response
+        return response, chunks
 
     def query_with_separate_keyword_extraction(
         self, query: str, prompt: str, param: QueryParam = QueryParam()

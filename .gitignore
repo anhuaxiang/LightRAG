@@ -24,3 +24,19 @@ examples/output/
 .DS_Store
 #Remove config.ini from repo
 *.ini
+
+# frpc
+frpc
+frpc.toml
+
+webui.py
+app_store.jsonl
+app_store.py
+app_store/
+
+google.jsonl
+google_play.py
+google_play/
+google_play_bak
+
+test.py
